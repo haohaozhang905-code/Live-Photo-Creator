@@ -15,11 +15,32 @@ struct CleanVideoPlayer: NSViewRepresentable {
 
 struct TextOverlayItem: Identifiable {
     let id = UUID()
-    var text: String = "双击或在右侧修改"
+    var text: String = "输入文字"
     var color: Color = .white
     var fontSize: CGFloat = 36
     var offset: CGSize = .zero
     var lastOffset: CGSize = .zero
+    var scale: CGFloat = 1.0
+    var lastScale: CGFloat = 1.0
+    var hasBackground: Bool = true
+}
+
+private struct PanelCardModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.92))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private extension View {
+    func panelCard() -> some View {
+        modifier(PanelCardModifier())
+    }
 }
 
 struct ContentView: View {
@@ -36,6 +57,12 @@ struct ContentView: View {
     @State private var isPlaying: Bool = true
     @State private var playbackSpeed: Float = 1.0
     @State private var playerVolume: Float = 1.0
+    @State private var currentTime: Double = 0
+    @State private var duration: Double = 0
+    @State private var isScrubbing: Bool = false
+    @State private var cropScaleStartValue: CGFloat?
+    @State private var timeObserver: Any?
+
 
     // 裁剪、旋转与翻转状态
     @State private var selectedRatio: String = "原比例"
@@ -44,15 +71,22 @@ struct ContentView: View {
     @State private var lastCropOffset: CGSize = .zero
     @State private var isFlippedHorizontal: Bool = false
     @State private var isFlippedVertical: Bool = false
-    @State private var rotationAngle: Int = 0 // 0, 90, 180, 270
     
     // 文本状态
     @State private var textItems: [TextOverlayItem] = []
     @State private var selectedTextID: UUID?
+    @State private var editingTextID: UUID?
+    @State private var hoveredTextID: UUID?
+    @State private var isTextListExpanded: Bool = false
+
+    // 主题：明亮 / 暗黑
+    @AppStorage("appColorScheme") private var appColorScheme: String = "dark"
+    @State private var debugRunId: String = UUID().uuidString
+    @State private var lastDebugSecond: Int = -1
 
     // 考虑旋转后的真实物理比例
     var currentVideoSize: CGSize {
-        return (rotationAngle % 180 == 0) ? videoOriginalSize : CGSize(width: videoOriginalSize.height, height: videoOriginalSize.width)
+        return videoOriginalSize
     }
 
     var aspectRatioFloat: CGFloat {
@@ -65,20 +99,81 @@ struct ContentView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Live Photo Creator")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                HStack(spacing: 6) {
+                    Button {
+                        appColorScheme = "light"
+                    } label: {
+                        Image(systemName: "sun.max.fill")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(appColorScheme == "light" ? .white : .secondary)
+                            .frame(width: 28, height: 28)
+                            .background(appColorScheme == "light" ? Color.accentColor : Color.primary.opacity(0.08))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        appColorScheme = "dark"
+                    } label: {
+                        Image(systemName: "moon.fill")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(appColorScheme == "dark" ? .white : .secondary)
+                            .frame(width: 28, height: 28)
+                            .background(appColorScheme == "dark" ? Color.accentColor : Color.primary.opacity(0.08))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+
+            HStack(spacing: 0) {
             // ==== 左侧：画板区 ====
             VStack(spacing: 12) {
-                Text("✨ 拖拽框内移动位置，拖拽右下角锚点调整大小").foregroundColor(.yellow).font(.caption)
-                
                 GeometryReader { geo in
                     ZStack {
-                        RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.3))
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                            )
                         
                         if let player = player {
                             // 1. 底层：视频画面 (响应旋转和翻转)
                             CleanVideoPlayer(player: player)
-                                .rotationEffect(.degrees(Double(rotationAngle)))
                                 .scaleEffect(x: isFlippedHorizontal ? -1 : 1, y: isFlippedVertical ? -1 : 1)
+                            
+                            VStack {
+                                HStack {
+                                    Spacer()
+                                    Button(role: .destructive) {
+                                        clearCurrentVideo()
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.primary)
+                                            .frame(width: 28, height: 28)
+                                            .background(.ultraThinMaterial)
+                                            .clipShape(Circle())
+                                            .overlay(
+                                                Circle()
+                                                    .stroke(Color.primary.opacity(0.14), lineWidth: 1)
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("移除当前视频")
+                                }
+                                .padding(10)
+                                Spacer()
+                            }
                             
                             // 2. 尺寸计算
                             let geoRatio = geo.size.width / geo.size.height
@@ -112,6 +207,7 @@ struct ContentView: View {
                                 .background(Color.white.opacity(0.001))
                                 .frame(width: currentBoxWidth, height: currentBoxHeight)
                                 .offset(cropOffset)
+                                .allowsHitTesting(selectedRatio != "原比例" || cropBoxScale < 1.0)
                                 .gesture( // 拖拽移动
                                     DragGesture().onChanged { value in
                                         var newX = lastCropOffset.width + value.translation.width
@@ -119,144 +215,428 @@ struct ContentView: View {
                                         newX = min(max(newX, -maxOffsetX), maxOffsetX)
                                         newY = min(max(newY, -maxOffsetY), maxOffsetY)
                                         cropOffset = CGSize(width: newX, height: newY)
-                                    }.onEnded { _ in lastCropOffset = cropOffset }
-                                )
-                                // 右下角缩放拖拽点
-                                .overlay(
-                                    Rectangle().fill(Color.yellow).frame(width: 16, height: 16)
-                                        .contentShape(Rectangle()) // 增加点击区域
-                                        .gesture(
-                                            DragGesture().onChanged { value in
-                                                // 基于拖拽距离计算缩放比例
-                                                let dragDelta = value.translation.width / maxBoxWidth
-                                                var newScale = cropBoxScale + dragDelta * 0.05
-                                                newScale = min(max(newScale, 0.2), 1.0)
-                                                cropBoxScale = newScale
-                                                // 修正缩放导致的出界
-                                                cropOffset = .zero; lastCropOffset = .zero
-                                            }
+                                    }.onEnded { _ in
+                                        // #region agent log
+                                        agentDebugLog(
+                                            hypothesisId: "H4",
+                                            location: "ContentView.swift:crop.drag.onEnded",
+                                            message: "crop box moved",
+                                            data: ["offsetX": cropOffset.width, "offsetY": cropOffset.height, "boxW": currentBoxWidth, "boxH": currentBoxHeight]
                                         )
-                                        .offset(x: 8, y: 8)
-                                        .opacity(selectedRatio == "原比例" && cropBoxScale == 1.0 ? 0 : 1)
-                                    , alignment: .bottomTrailing
+                                        // #endregion
+                                        lastCropOffset = cropOffset
+                                    }
                                 )
                                 .onAppear { currentUIBoxSize = CGSize(width: actualVideoWidth, height: actualVideoHeight) }
                                 .onChange(of: geo.size) { _ in currentUIBoxSize = CGSize(width: actualVideoWidth, height: actualVideoHeight) }
                             
-                            // 5. 文本层
-                            ForEach($textItems) { $item in
-                                Text(item.text).font(.system(size: item.fontSize, weight: .bold)).foregroundColor(item.color)
-                                    .padding(8).border(selectedTextID == item.id ? Color.white.opacity(0.5) : Color.clear, width: 1)
-                                    .offset(item.offset)
-                                    .onTapGesture { selectedTextID = item.id }
+                            if !(selectedRatio == "原比例" && cropBoxScale == 1.0) {
+                                Circle()
+                                    .fill(Color.yellow)
+                                    .frame(width: 16, height: 16)
+                                    .contentShape(Rectangle())
+                                    .offset(
+                                        x: cropOffset.width + currentBoxWidth / 2,
+                                        y: cropOffset.height + currentBoxHeight / 2
+                                    )
                                     .gesture(
                                         DragGesture().onChanged { value in
-                                            selectedTextID = item.id
-                                            item.offset = CGSize(width: item.lastOffset.width + value.translation.width, height: item.lastOffset.height + value.translation.height)
-                                        }.onEnded { _ in item.lastOffset = item.offset }
+                                            if cropScaleStartValue == nil { cropScaleStartValue = cropBoxScale }
+                                            let start = cropScaleStartValue ?? cropBoxScale
+                                            // 降低灵敏度，按初始值 + 拖拽量计算，避免累计误差导致过快
+                                            let dragDelta = value.translation.width / max(maxBoxWidth, 1)
+                                            var newScale = start + dragDelta * 0.60
+                                            newScale = min(max(newScale, 0.2), 1.0)
+                                            cropBoxScale = newScale
+                                            cropOffset = .zero
+                                            lastCropOffset = .zero
+                                            // #region agent log
+                                            agentDebugLog(
+                                                hypothesisId: "H4",
+                                                location: "ContentView.swift:crop.scale.drag.onChanged",
+                                                message: "crop scale changed and offset reset",
+                                                data: ["newScale": cropBoxScale, "offsetX": cropOffset.width, "offsetY": cropOffset.height]
+                                            )
+                                            // #endregion
+                                        }
+                                        .onEnded { _ in
+                                            cropScaleStartValue = nil
+                                        }
                                     )
+                            }
+                            
+                            // 5. 文本层
+                            ForEach($textItems) { $item in
+                                let isSelected = selectedTextID == item.id
+                                let controlsOpacity: Double = (hoveredTextID == item.id) ? 0.95 : 0.28
+                                ZStack {
+                                    Text(item.text)
+                                        .font(.system(size: item.fontSize, weight: .semibold))
+                                        .foregroundColor(item.color)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(item.hasBackground ? Color.black.opacity(0.18) : Color.clear)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                                    if isSelected {
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .stroke(Color.accentColor.opacity(0.45), lineWidth: 1.2)
+                                            .padding(-4)
+                                            .opacity(controlsOpacity)
+                                    }
+                                }
+                                .scaleEffect(item.scale)
+                                .offset(item.offset)
+                                .onHover { inside in
+                                    hoveredTextID = inside ? item.id : (hoveredTextID == item.id ? nil : hoveredTextID)
+                                }
+                                .onTapGesture {
+                                    selectedTextID = item.id
+                                    editingTextID = nil
+                                }
+                                .gesture(
+                                    DragGesture().onChanged { value in
+                                        selectedTextID = item.id
+                                        item.offset = CGSize(
+                                            width: item.lastOffset.width + value.translation.width,
+                                            height: item.lastOffset.height + value.translation.height
+                                        )
+                                    }.onEnded { _ in
+                                        item.lastOffset = item.offset
+                                    }
+                                )
+                                .animation(.easeOut(duration: 0.18), value: controlsOpacity)
                             }
                         } else {
                             Button(action: selectVideo) {
-                                VStack(spacing: 12) { Image(systemName: "plus.circle.fill").font(.system(size: 40)).foregroundColor(.blue); Text("点击选择视频文件").foregroundColor(.gray) }
+                                VStack(spacing: 12) { Image(systemName: "plus.circle.fill").font(.system(size: 52)).foregroundColor(.blue); Text("点击选择视频文件").foregroundColor(.gray) }
                             }.buttonStyle(.plain)
                         }
-                    }.clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            if editingTextID != nil {
+                                editingTextID = nil
+                                return
+                            }
+                            if player != nil {
+                                togglePlay()
+                            }
+                        }
+                    )
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 
-                // 播控栏
-                HStack(spacing: 20) {
-                    Button(action: togglePlay) {
-                        Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 28)).foregroundColor(videoURL == nil ? .gray : .white)
-                    }.buttonStyle(.plain).disabled(videoURL == nil)
-                    
-                    Picker("倍速", selection: $playbackSpeed) {
-                        Text("0.5x").tag(Float(0.5)); Text("1.0x").tag(Float(1.0)); Text("1.5x").tag(Float(1.5)); Text("2.0x").tag(Float(2.0))
-                    }.pickerStyle(.segmented).frame(width: 200).onChange(of: playbackSpeed) { val in if isPlaying { player?.rate = val } }
-                    Spacer()
-                    HStack {
-                        Image(systemName: "speaker.wave.1.fill").foregroundColor(.gray).font(.caption)
-                        Slider(value: $playerVolume, in: 0...1) { ed in if !ed { player?.volume = playerVolume } }.frame(width: 100)
-                    }.disabled(videoURL == nil)
-                }.padding(.horizontal, 16).padding(.vertical, 12).background(Color.black.opacity(0.4)).cornerRadius(8)
+                // 播控栏：进度条 + 主控 + 收起的倍速/音量
+                VStack(spacing: 10) {
+                    HStack(spacing: 12) {
+                        Button(action: togglePlay) {
+                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(videoURL == nil ? .secondary : .primary)
+                                .frame(width: 42, height: 42)
+                                .background(Color.primary.opacity(0.08))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(videoURL == nil)
+
+                        VStack(spacing: 4) {
+                            Slider(
+                                value: Binding(
+                                    get: { currentTime },
+                                    set: { t in
+                                        currentTime = t
+                                        if isScrubbing { seekPlayer(to: t) }
+                                    }
+                                ),
+                                in: 0...max(1, duration),
+                                onEditingChanged: { editing in
+                                    isScrubbing = editing
+                                    if !editing { seekPlayer(to: currentTime) }
+                                }
+                            )
+                            HStack {
+                                Text(formatTime(currentTime)).font(.caption2).foregroundColor(.secondary)
+                                Spacer()
+                                Text(formatTime(duration)).font(.caption2).foregroundColor(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .disabled(videoURL == nil || duration <= 0)
+                    }
+
+                    HStack(spacing: 14) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "speedometer").font(.system(size: 16, weight: .semibold)).foregroundColor(.secondary)
+                            Picker("", selection: $playbackSpeed) {
+                                Text("0.5×").tag(Float(0.5))
+                                Text("1×").tag(Float(1.0))
+                                Text("1.5×").tag(Float(1.5))
+                                Text("2×").tag(Float(2.0))
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 180)
+                            .onChange(of: playbackSpeed) { _, val in
+                                if isPlaying {
+                                    player?.rate = val
+                                }
+                            }
+                        }
+
+                        HStack(spacing: 8) {
+                            Image(systemName: "speaker.wave.2.fill").font(.system(size: 16, weight: .semibold)).foregroundColor(.secondary)
+                            Slider(value: $playerVolume, in: 0...1)
+                                .frame(width: 120)
+                                .onChange(of: playerVolume) { _, v in player?.volume = v }
+                        }
+                    }
+                    .disabled(videoURL == nil)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .panelCard()
                 
             }.padding().frame(maxWidth: .infinity)
             
-            Divider()
-            
-            // ==== 右侧：控制面板区 ====
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Label("画面调整", systemImage: "crop").font(.headline)
-                        
-                        // 裁剪比例
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("裁剪比例").font(.subheadline).foregroundColor(.gray)
-                            Picker("", selection: $selectedRatio) {
-                                Text("原图").tag("原比例"); Text("1:1").tag("1:1"); Text("16:9").tag("16:9"); Text("9:16").tag("9:16"); Text("4:3").tag("4:3"); Text("3:4").tag("3:4")
-                            }.pickerStyle(.menu).frame(maxWidth: .infinity)
-                            .onChange(of: selectedRatio) { _ in cropBoxScale = 1.0; cropOffset = .zero; lastCropOffset = .zero }
+                // ==== 右侧：控制面板区 ====
+                VStack(spacing: 10) {
+                    VStack(spacing: 6) {
+                        Button(action: exportLivePhoto) {
+                            Label(isExporting ? "正在渲染..." : "渲染导出 Live Photo", systemImage: "bolt.fill")
+                                .font(.headline)
+                                .foregroundColor(isExporting ? .gray : .black)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(isExporting ? Color.gray.opacity(0.5) : Color.yellow)
+                                .cornerRadius(10)
                         }
-                        
-                        Divider().padding(.vertical, 4)
-                        
-                        // 翻转与旋转
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("画面方向").font(.subheadline).foregroundColor(.gray)
-                            HStack {
-                                Button(action: { rotationAngle = (rotationAngle + 90) % 360; cropOffset = .zero; lastCropOffset = .zero }) {
-                                    Label("旋转", systemImage: "rotate.right").frame(maxWidth: .infinity, minHeight: 30).background(Color.blue.opacity(0.2)).cornerRadius(6)
-                                }.buttonStyle(.bordered)
-                                
-                                Button(action: { isFlippedHorizontal.toggle() }) {
-                                    Label("水平", systemImage: "arrow.left.and.right").frame(maxWidth: .infinity, minHeight: 30).background(isFlippedHorizontal ? Color.blue.opacity(0.2) : Color.clear).cornerRadius(6)
-                                }.buttonStyle(.bordered)
-                                
-                                Button(action: { isFlippedVertical.toggle() }) {
-                                    Label("垂直", systemImage: "arrow.up.and.down").frame(maxWidth: .infinity, minHeight: 30).background(isFlippedVertical ? Color.blue.opacity(0.2) : Color.clear).cornerRadius(6)
-                                }.buttonStyle(.bordered)
+                        .buttonStyle(.plain)
+                        .disabled(isExporting || videoURL == nil)
+
+                        Text(statusMessage)
+                            .font(.caption2)
+                            .foregroundColor(statusMessage.contains("成功") ? .green : (statusMessage.contains("❌") ? .red : .secondary))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+                    .panelCard()
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label("画面调整", systemImage: "crop").font(.headline)
+                                VStack(spacing: 0) {
+                                    HStack {
+                                        Text("比例")
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        Picker("", selection: $selectedRatio) {
+                                            Text("原图").tag("原比例")
+                                            Text("1:1").tag("1:1")
+                                            Text("16:9").tag("16:9")
+                                            Text("9:16").tag("9:16")
+                                            Text("4:3").tag("4:3")
+                                            Text("3:4").tag("3:4")
+                                        }
+                                        .pickerStyle(.menu)
+                                        .frame(width: 120)
+                                        .onChange(of: selectedRatio) { _ in
+                                            cropBoxScale = 1.0
+                                            cropOffset = .zero
+                                            lastCropOffset = .zero
+                                        }
+                                    }
+                                    .padding(10)
+                                    .background(Color.primary.opacity(0.03))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                                    Divider().padding(.horizontal, 6)
+                                    HStack(spacing: 8) {
+                                        Button(action: { isFlippedHorizontal.toggle() }) {
+                                            Image(systemName: "arrow.left.and.right")
+                                                .frame(maxWidth: .infinity, minHeight: 30)
+                                                .background(isFlippedHorizontal ? Color.primary.opacity(0.10) : Color.clear)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(isFlippedHorizontal ? Color.primary.opacity(0.25) : Color.clear, lineWidth: 1)
+                                                )
+                                                .cornerRadius(8)
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        Button(action: { isFlippedVertical.toggle() }) {
+                                            Image(systemName: "arrow.up.and.down")
+                                                .frame(maxWidth: .infinity, minHeight: 30)
+                                                .background(isFlippedVertical ? Color.primary.opacity(0.10) : Color.clear)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 8)
+                                                        .stroke(isFlippedVertical ? Color.primary.opacity(0.25) : Color.clear, lineWidth: 1)
+                                                )
+                                                .cornerRadius(8)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(10)
+                                }
                             }
+                            .padding(12)
+                            .panelCard()
+
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Label("文本", systemImage: "textformat")
+                                        .font(.headline)
+                                    Spacer()
+                                    Button(action: addText) {
+                                        Image(systemName: "plus.circle.fill")
+                                            .foregroundColor(.blue)
+                                            .font(.system(size: 24, weight: .medium))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                if textItems.isEmpty {
+                                    Text("先添加一条文本")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                } else {
+                                    VStack(spacing: 8) {
+                                        let listItems = displayTextItems()
+                                        ForEach(Array(listItems.enumerated()), id: \.element.id) { idx, textItem in
+                                            Button {
+                                                selectedTextID = textItem.id
+                                                editingTextID = nil
+                                            } label: {
+                                                HStack {
+                                                    Text("文本 \(indexOfTextItem(textItem.id) + 1)")
+                                                        .font(.caption)
+                                                        .foregroundColor(.secondary)
+                                                    Text(textItem.text)
+                                                        .font(.caption2)
+                                                        .lineLimit(1)
+                                                        .foregroundColor(.secondary)
+                                                    Spacer()
+                                                    Button(role: .destructive) {
+                                                        removeText(id: textItem.id)
+                                                    } label: {
+                                                        Image(systemName: "trash")
+                                                            .font(.system(size: 11, weight: .semibold))
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                }
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 6)
+                                                .background(selectedTextID == textItem.id ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.03))
+                                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                    if textItems.count > 2 {
+                                        Button(isTextListExpanded ? "收起" : "展开全部") {
+                                            isTextListExpanded.toggle()
+                                        }
+                                        .font(.caption2)
+                                        .buttonStyle(.plain)
+                                        .foregroundColor(.secondary)
+                                    }
+                                }
+
+                                if let selectedID = selectedTextID,
+                                   let index = textItems.firstIndex(where: { $0.id == selectedID }) {
+                                    TextField("文本内容（最多50字）", text: Binding(
+                                        get: { textItems[index].text },
+                                        set: { textItems[index].text = String($0.prefix(50)) }
+                                    ))
+                                    .textFieldStyle(.roundedBorder)
+                                    .onTapGesture {
+                                        editingTextID = selectedID
+                                    }
+                                    .onSubmit {
+                                        editingTextID = nil
+                                    }
+
+                                    HStack(spacing: 8) {
+                                        ColorPicker("", selection: $textItems[index].color).labelsHidden()
+                                        Spacer()
+                                    }
+                                    Slider(value: $textItems[index].scale, in: 0.35...4.0)
+                                        .onChange(of: textItems[index].scale) { _, v in
+                                            textItems[index].lastScale = v
+                                        }
+                                }
+                            }
+                            .padding(12)
+                            .panelCard()
                         }
-                    }.padding(12).background(Color.black.opacity(0.2)).cornerRadius(10)
-                    
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack { Label("添加文本", systemImage: "textformat").font(.headline); Spacer(); Button(action: addText) { Image(systemName: "plus.circle.fill").foregroundColor(.blue).font(.title3) }.buttonStyle(.plain) }
-                        if let selectedID = selectedTextID, let index = textItems.firstIndex(where: { $0.id == selectedID }) {
-                            VStack(alignment: .leading, spacing: 12) {
-                                TextField("输入文本", text: $textItems[index].text).textFieldStyle(.roundedBorder)
-                                HStack { ColorPicker("文字颜色", selection: $textItems[index].color); Spacer(); Button("删除") { textItems.remove(at: index); selectedTextID = nil }.foregroundColor(.red).font(.caption).buttonStyle(.plain) }
-                                HStack { Text("字号").font(.caption); Slider(value: $textItems[index].fontSize, in: 12...150) }
-                            }
-                        } else { Text("点击右上角 + 号添加文字").font(.caption).foregroundColor(.gray) }
-                    }.padding(12).background(Color.black.opacity(0.2)).cornerRadius(10)
-                    
-                    Spacer(minLength: 40)
-                    
-                    Button(action: exportLivePhoto) {
-                        Label(isExporting ? "正在渲染系统图层..." : "渲染导出 Live Photo", systemImage: "bolt.fill")
-                            .font(.headline).foregroundColor(isExporting ? .gray : .black).frame(maxWidth: .infinity, minHeight: 44)
-                            .background(isExporting ? Color.gray.opacity(0.5) : Color.yellow).cornerRadius(8)
-                    }.buttonStyle(.plain).disabled(isExporting || videoURL == nil)
-                    
-                    Text(statusMessage).font(.caption2).foregroundColor(statusMessage.contains("成功") ? .green : (statusMessage.contains("❌") ? .red : .gray)).frame(maxWidth: .infinity, alignment: .center)
-                }.padding()
-            }.frame(width: 280).background(Color(NSColor.windowBackgroundColor))
-        }.frame(minWidth: 900, minHeight: 600).preferredColorScheme(.dark)
-        .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { _ in isPlaying = false; player?.seek(to: .zero) }
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                        .padding(.bottom, 8)
+                    }
+                }
+                .frame(width: 300)
+                .padding(.trailing, 8)
+                .disabled(videoURL == nil)
+                .opacity(videoURL == nil ? 0.45 : 1)
+            }
+        }
+        .frame(minWidth: 900, minHeight: 600)
+        .background(Color(NSColor.windowBackgroundColor))
+        .preferredColorScheme(appColorScheme == "light" ? .light : .dark)
+        .onDeleteCommand {
+            removeSelectedText()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { _ in
+            // #region agent log
+            agentDebugLog(
+                hypothesisId: "H1",
+                location: "ContentView.swift:onReceive.didPlayToEnd",
+                message: "player reached end and seeks to zero",
+                data: ["currentTime": player?.currentTime().seconds ?? -1]
+            )
+            // #endregion
+            isPlaying = false
+            player?.seek(to: .zero)
+        }
     }
     
     // MARK: - 功能函数
     func selectVideo() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.movie, .quickTimeMovie, .mpeg4Movie]
         if panel.runModal() == .OK, let url = panel.url {
-            self.videoURL = url; let asset = AVAsset(url: url)
+            let oldPlayer = self.player
+            if let ob = self.timeObserver, let old = oldPlayer { old.removeTimeObserver(ob) }
+            self.timeObserver = nil
+            // 新视频初始化：清空文本与画面状态
+            self.textItems = []
+            self.selectedTextID = nil
+            self.editingTextID = nil
+            self.hoveredTextID = nil
+            self.isTextListExpanded = false
+            self.cropBoxScale = 1.0
+            self.cropOffset = .zero
+            self.lastCropOffset = .zero
+            self.isFlippedHorizontal = false
+            self.isFlippedVertical = false
+            self.videoURL = url
+            let asset = AVAsset(url: url)
             self.player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+            setupTimeObserver()
             Task {
                 if let track = try? await asset.loadTracks(withMediaType: .video).first {
                     let size = try await track.load(.naturalSize); let t = try await track.load(.preferredTransform)
                     let actualSize = abs(t.a) == 1 ? size : CGSize(width: size.height, height: size.width)
-                    DispatchQueue.main.async { self.videoOriginalSize = actualSize; self.player?.play(); self.isPlaying = true; self.statusMessage = "视频已加载完毕" }
+                    let loadedDuration = (try? await asset.load(.duration).seconds) ?? 0
+                    DispatchQueue.main.async {
+                        self.videoOriginalSize = actualSize
+                        self.duration = (loadedDuration.isFinite && loadedDuration > 0) ? loadedDuration : 0
+                        self.currentTime = 0
+                        self.player?.seek(to: .zero)
+                        self.player?.play()
+                        self.player?.rate = self.playbackSpeed
+                        self.isPlaying = true
+                        self.statusMessage = "视频已加载完毕"
+                    }
                 }
             }
         }
@@ -266,7 +646,178 @@ struct ContentView: View {
         if isPlaying { player.pause() } else { player.play(); player.rate = playbackSpeed }
         isPlaying.toggle()
     }
-    func addText() { let newItem = TextOverlayItem(); textItems.append(newItem); selectedTextID = newItem.id }
+    func addText() {
+        let newItem = TextOverlayItem()
+        textItems.append(newItem)
+        selectedTextID = newItem.id
+        editingTextID = newItem.id
+    }
+
+    func removeSelectedText() {
+        guard let selectedID = selectedTextID,
+              let index = textItems.firstIndex(where: { $0.id == selectedID }) else { return }
+        textItems.remove(at: index)
+        selectedTextID = nil
+        editingTextID = nil
+        if textItems.count <= 2 { isTextListExpanded = false }
+    }
+
+    func clearCurrentVideo() {
+        if let ob = timeObserver, let old = player {
+            old.removeTimeObserver(ob)
+        }
+        timeObserver = nil
+        videoURL = nil
+        player = nil
+        isPlaying = false
+        duration = 0
+        currentTime = 0
+        cropBoxScale = 1.0
+        cropOffset = .zero
+        lastCropOffset = .zero
+        isFlippedHorizontal = false
+        isFlippedVertical = false
+        textItems = []
+        selectedTextID = nil
+        editingTextID = nil
+        hoveredTextID = nil
+        isTextListExpanded = false
+        statusMessage = "请先导入视频"
+    }
+
+    func removeText(id: UUID) {
+        guard let index = textItems.firstIndex(where: { $0.id == id }) else { return }
+        textItems.remove(at: index)
+        if selectedTextID == id { selectedTextID = nil }
+        if editingTextID == id { editingTextID = nil }
+        if textItems.count <= 2 { isTextListExpanded = false }
+    }
+
+    func displayTextItems() -> [TextOverlayItem] {
+        guard textItems.count > 1 else { return textItems }
+        if isTextListExpanded { return textItems }
+        // 折叠状态下默认展示首条；若当前选中不是首条，额外展示选中项，避免“选中了但看不见”
+        var result: [TextOverlayItem] = [textItems[0]]
+        if let selectedID = selectedTextID,
+           let selected = textItems.first(where: { $0.id == selectedID }),
+           selected.id != textItems[0].id {
+            result.append(selected)
+        }
+        return result
+    }
+
+    func indexOfTextItem(_ id: UUID) -> Int {
+        textItems.firstIndex(where: { $0.id == id }) ?? 0
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        let m = Int(seconds) / 60
+        let s = Int(seconds) % 60
+        return String(format: "%d:%02d", m, s)
+    }
+
+    private func agentDebugLog(hypothesisId: String, location: String, message: String, data: [String: Any]) {
+        let logPath = "/Users/billzhang/Documents/GitHub/.cursor/debug-2dcd41.log"
+        var payload: [String: Any] = [
+            "sessionId": "2dcd41",
+            "runId": debugRunId,
+            "hypothesisId": hypothesisId,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ]
+        if payload["id"] == nil {
+            payload["id"] = UUID().uuidString
+        }
+        guard JSONSerialization.isValidJSONObject(payload),
+              let jsonData = try? JSONSerialization.data(withJSONObject: payload),
+              var line = String(data: jsonData, encoding: .utf8) else { return }
+        line += "\n"
+        let url = URL(fileURLWithPath: logPath)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            if let d = line.data(using: .utf8) {
+                handle.write(d)
+            }
+            try? handle.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func setupTimeObserver() {
+        timeObserver = player?.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 4), queue: .main) { [self] time in
+            if !isScrubbing {
+                let safeDuration = duration > 0 ? duration : max(time.seconds, 0)
+                currentTime = min(max(0, time.seconds), safeDuration)
+            }
+            let sec = Int(time.seconds.rounded())
+            if sec != lastDebugSecond {
+                lastDebugSecond = sec
+                // #region agent log
+                agentDebugLog(
+                    hypothesisId: "H1",
+                    location: "ContentView.swift:setupTimeObserver.tick",
+                    message: "periodic time observer tick",
+                    data: ["observerTime": time.seconds, "duration": duration, "isPlaying": isPlaying]
+                )
+                // #endregion
+            }
+        }
+        if let item = player?.currentItem {
+            duration = item.duration.seconds
+            if duration.isFinite && duration > 0 { } else { duration = 0 }
+        }
+    }
+
+    private func seekPlayer(to seconds: Double) {
+        guard let player = player else { return }
+        let upper = duration > 0 ? duration : max(seconds, 0)
+        let clamped = min(max(0, seconds), upper)
+        player.seek(
+            to: CMTime(seconds: clamped, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+    }
+
+    private func normalizeTransform(_ transform: CGAffineTransform, for baseSize: CGSize) -> (CGAffineTransform, CGSize) {
+        let rect = CGRect(origin: .zero, size: baseSize).applying(transform)
+        let normalized = transform.translatedBy(x: -rect.minX, y: -rect.minY)
+        return (normalized, CGSize(width: rect.width, height: rect.height))
+    }
+
+    private func watermarkImage(text: String, fontSize: CGFloat, color: NSColor) -> CGImage? {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
+            .foregroundColor: color
+        ]
+        let textSize = (text as NSString).size(withAttributes: attrs)
+        let canvas = CGSize(width: max(80, ceil(textSize.width) + 20), height: max(30, ceil(textSize.height) + 12))
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(canvas.width),
+            pixelsHigh: Int(canvas.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = ctx
+            NSColor.clear.setFill()
+            NSBezierPath(rect: CGRect(origin: .zero, size: canvas)).fill()
+            let drawRect = CGRect(x: 10, y: (canvas.height - textSize.height) / 2, width: textSize.width, height: textSize.height)
+            (text as NSString).draw(in: drawRect, withAttributes: attrs)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.cgImage
+    }
     
     // MARK: - 🚀 终极渲染引擎 (核心修复版)
     func exportLivePhoto() {
@@ -290,18 +841,62 @@ struct ContentView: View {
         let normCropY = (uiHeight / 2 - boxH / 2 + cropOffset.height) / uiHeight
         let normCropW = boxW / uiWidth; let normCropH = boxH / uiHeight
         
-        // 真实像素裁剪框
-        let cropRect = CGRect(x: normCropX * vSize.width, y: normCropY * vSize.height, width: normCropW * vSize.width, height: normCropH * vSize.height)
+        // 真实像素裁剪框（ clamp 到可见区域，避免黑边）
+        var cropRect = CGRect(
+            x: normCropX * vSize.width,
+            y: normCropY * vSize.height,
+            width: normCropW * vSize.width,
+            height: normCropH * vSize.height
+        )
+        // 确保不越界且尺寸有效
+        cropRect.origin.x = max(0, min(cropRect.origin.x, vSize.width - 1))
+        cropRect.origin.y = max(0, min(cropRect.origin.y, vSize.height - 1))
+        cropRect.size.width = min(cropRect.width, vSize.width - cropRect.origin.x)
+        cropRect.size.height = min(cropRect.height, vSize.height - cropRect.origin.y)
+        cropRect.size.width = max(1, cropRect.width)
+        cropRect.size.height = max(1, cropRect.height)
+        cropRect.origin.x = round(cropRect.origin.x)
+        cropRect.origin.y = round(cropRect.origin.y)
+        cropRect.size.width = round(cropRect.size.width)
+        cropRect.size.height = round(cropRect.size.height)
+        cropRect.size.width = min(cropRect.size.width, vSize.width - cropRect.origin.x)
+        cropRect.size.height = min(cropRect.size.height, vSize.height - cropRect.origin.y)
         
         let textsToRender = textItems
-        let rAngle = rotationAngle; let flipH = isFlippedHorizontal; let flipV = isFlippedVertical; let speed = playbackSpeed
+        let flipH = isFlippedHorizontal
+        let flipV = isFlippedVertical
+        let speed = playbackSpeed
+
+        // #region agent log
+        agentDebugLog(
+            hypothesisId: "H2_H3",
+            location: "ContentView.swift:exportLivePhoto.params",
+            message: "export parameters prepared",
+            data: [
+                "keyframe": keyframeTime.seconds,
+                "vW": vSize.width,
+                "vH": vSize.height,
+                "uiW": uiWidth,
+                "uiH": uiHeight,
+                "boxW": boxW,
+                "boxH": boxH,
+                "cropX": cropRect.origin.x,
+                "cropY": cropRect.origin.y,
+                "cropW": cropRect.width,
+                "cropH": cropRect.height,
+                "flipH": flipH,
+                "flipV": flipV,
+                "textCount": textsToRender.count
+            ]
+        )
+        // #endregion
         
         DispatchQueue.global(qos: .userInitiated).async {
-            self.executeRenderEngine(asset: asset, keyframeTime: keyframeTime, uuid: uuid, cropRect: cropRect, texts: textsToRender, uiWidth: uiWidth, uiHeight: uiHeight, flipH: flipH, flipV: flipV, rotation: rAngle, speed: speed)
+            self.executeRenderEngine(asset: asset, keyframeTime: keyframeTime, uuid: uuid, cropRect: cropRect, texts: textsToRender, uiWidth: uiWidth, uiHeight: uiHeight, boxW: boxW, boxH: boxH, cropOffset: cropOffset, flipH: flipH, flipV: flipV, speed: speed)
         }
     }
     
-    func executeRenderEngine(asset: AVAsset, keyframeTime: CMTime, uuid: String, cropRect: CGRect, texts: [TextOverlayItem], uiWidth: CGFloat, uiHeight: CGFloat, flipH: Bool, flipV: Bool, rotation: Int, speed: Float) {
+    func executeRenderEngine(asset: AVAsset, keyframeTime: CMTime, uuid: String, cropRect: CGRect, texts: [TextOverlayItem], uiWidth: CGFloat, uiHeight: CGFloat, boxW: CGFloat, boxH: CGFloat, cropOffset: CGSize, flipH: Bool, flipV: Bool, speed: Float) {
         let tempDir = FileManager.default.temporaryDirectory
         let imageURL = tempDir.appendingPathComponent("\(uuid).jpg")
         let videoURL = tempDir.appendingPathComponent("\(uuid).mov")
@@ -315,9 +910,39 @@ struct ContentView: View {
         }
         
         let duration = asset.duration.seconds
-        var startSeconds = max(0, keyframeTime.seconds - 1.5 * Double(speed))
-        var endSeconds = min(duration, keyframeTime.seconds + 1.5 * Double(speed))
-        if endSeconds - startSeconds < 3.0 * Double(speed) { startSeconds = max(0, endSeconds - 3.0 * Double(speed)) }
+        let desiredSourceWindow = 3.0 * Double(speed)
+        let halfWindow = desiredSourceWindow / 2.0
+        
+        var startSeconds = max(0, keyframeTime.seconds - halfWindow)
+        var endSeconds = min(duration, keyframeTime.seconds + halfWindow)
+        
+        // 优先保证总窗口达到 desiredSourceWindow：
+        // 若靠近结尾，就向前补；若靠近开头，就向后补。
+        var currentWindow = endSeconds - startSeconds
+        if currentWindow < desiredSourceWindow {
+            var missing = desiredSourceWindow - currentWindow
+            
+            // 先尝试向前补
+            let canExtendBackward = startSeconds
+            let backwardFill = min(missing, canExtendBackward)
+            startSeconds -= backwardFill
+            missing -= backwardFill
+            
+            // 再尝试向后补
+            if missing > 0 {
+                let canExtendForward = max(0, duration - endSeconds)
+                let forwardFill = min(missing, canExtendForward)
+                endSeconds += forwardFill
+                missing -= forwardFill
+            }
+            
+            // 理论兜底（素材本身不足时会保留实际可用长度）
+            currentWindow = endSeconds - startSeconds
+            if currentWindow < 0 {
+                startSeconds = 0
+                endSeconds = min(duration, desiredSourceWindow)
+            }
+        }
         
         let sourceTimeRange = CMTimeRange(start: CMTime(seconds: startSeconds, preferredTimescale: 600), duration: CMTime(seconds: endSeconds - startSeconds, preferredTimescale: 600))
         let targetDuration = CMTime(seconds: sourceTimeRange.duration.seconds / Double(speed), preferredTimescale: 600)
@@ -339,51 +964,131 @@ struct ContentView: View {
         instruction.timeRange = targetTimeRange
         let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
         
-        // 以画面中心为原点进行变换，彻底杜绝坐标系飞出黑屏
-        var transform = assetVideoTrack.preferredTransform
-        // 处理旋转
-        transform = transform.translatedBy(x: videoOriginalSize.width / 2, y: videoOriginalSize.height / 2)
-        transform = transform.rotated(by: CGFloat(rotation) * .pi / 180.0)
-        // 修正旋转后的中心偏移
-        let newWidth = (rotation % 180 == 0) ? videoOriginalSize.width : videoOriginalSize.height
-        let newHeight = (rotation % 180 == 0) ? videoOriginalSize.height : videoOriginalSize.width
-        transform = transform.translatedBy(x: -newWidth / 2, y: -newHeight / 2)
+        // 变换：先归一化原视频方向，再应用用户旋转/翻转，最后裁剪平移。
+        let naturalSize = assetVideoTrack.naturalSize
+        let base = normalizeTransform(assetVideoTrack.preferredTransform, for: naturalSize)
+        var userTransform = CGAffineTransform.identity
+        let baseW = base.1.width
+        let baseH = base.1.height
         
-        // 处理翻转 (基于当前物理中心)
-        if flipH { transform = transform.translatedBy(x: newWidth, y: 0).scaledBy(x: -1, y: 1) }
-        if flipV { transform = transform.translatedBy(x: 0, y: newHeight).scaledBy(x: 1, y: -1) }
+        var userSize = CGSize(width: baseW, height: baseH)
         
-        // 处理裁剪偏移
+        if flipH {
+            userTransform = userTransform
+                .translatedBy(x: userSize.width, y: 0)
+                .scaledBy(x: -1, y: 1)
+        }
+        if flipV {
+            userTransform = userTransform
+                .translatedBy(x: 0, y: userSize.height)
+                .scaledBy(x: 1, y: -1)
+        }
+        let flipped = normalizeTransform(userTransform, for: CGSize(width: baseW, height: baseH))
+        userTransform = flipped.0
+        userSize = flipped.1
+        
+        var transform = base.0.concatenating(userTransform)
         transform = transform.translatedBy(x: -cropRect.origin.x, y: -cropRect.origin.y)
+
+        // #region agent log
+        agentDebugLog(
+            hypothesisId: "H3",
+            location: "ContentView.swift:executeRenderEngine.transform",
+            message: "final video transform computed",
+            data: [
+                "renderW": cropRect.width,
+                "renderH": cropRect.height,
+                "tx": transform.tx,
+                "ty": transform.ty,
+                "a": transform.a,
+                "b": transform.b,
+                "c": transform.c,
+                "d": transform.d
+            ]
+        )
+        // #endregion
         
         layerInstruction.setTransform(transform, at: .zero)
         instruction.layerInstructions = [layerInstruction]
         videoComposition.instructions = [instruction]
         
-        // 🚀 文字烧录重写 (解决坐标颠倒和不显示问题)
+        // 文字烧录：UI 坐标 -> 裁剪框内坐标 -> 输出像素（与预览所见一致）
         let parentLayer = CALayer()
         parentLayer.frame = CGRect(origin: .zero, size: cropRect.size)
-        parentLayer.isGeometryFlipped = true // 强制 Mac 坐标系与 iOS 坐标系对齐！
+        parentLayer.isGeometryFlipped = false
         
         let videoLayer = CALayer()
         videoLayer.frame = CGRect(origin: .zero, size: cropRect.size)
         parentLayer.addSublayer(videoLayer)
         
+        let scaleX = cropRect.width / boxW
+        let scaleY = cropRect.height / boxH
+        let cropBoxLeft = uiWidth / 2 - boxW / 2 + cropOffset.width
+        let cropBoxTop = uiHeight / 2 - boxH / 2 + cropOffset.height
+
+        // #region agent log
+        agentDebugLog(
+            hypothesisId: "H2",
+            location: "ContentView.swift:executeRenderEngine.text.mapping.base",
+            message: "text mapping base values",
+            data: [
+                "scaleX": scaleX,
+                "scaleY": scaleY,
+                "cropBoxLeft": cropBoxLeft,
+                "cropBoxTop": cropBoxTop,
+                "textCount": texts.count
+            ]
+        )
+        // #endregion
+        
         for item in texts {
-            let textLayer = CATextLayer()
-            textLayer.string = item.text
-            textLayer.fontSize = item.fontSize * (newWidth / uiWidth)
-            textLayer.foregroundColor = NSColor(item.color).cgColor
-            textLayer.alignmentMode = .center
-            
-            // 真实物理坐标换算
-            let normTextX = (uiWidth / 2 + item.offset.width) / uiWidth
-            let normTextY = (uiHeight / 2 + item.offset.height) / uiHeight
-            let textAbsX = normTextX * newWidth - cropRect.origin.x
-            let textAbsY = normTextY * newHeight - cropRect.origin.y // Flipped 生效，无需反转Y轴
-            
-            textLayer.frame = CGRect(x: textAbsX - 500, y: textAbsY - textLayer.fontSize/2, width: 1000, height: textLayer.fontSize * 1.5)
-            parentLayer.addSublayer(textLayer)
+            // 文字中心在 UI 中为 (uiWidth/2 + offset.width, uiHeight/2 + offset.height)
+            // 转为裁剪框内坐标（左上为原点）
+            let safeBoxW = max(boxW, 1)
+            let safeBoxH = max(boxH, 1)
+            let localX = (uiWidth / 2 + item.offset.width) - cropBoxLeft
+            let localY = (uiHeight / 2 + item.offset.height) - cropBoxTop
+            let normalizedX = min(max(localX / safeBoxW, 0), 1)
+            let normalizedY = min(max(localY / safeBoxH, 0), 1)
+            let outX = normalizedX * cropRect.width
+            let outY = normalizedY * cropRect.height
+            let fontSizeOut = item.fontSize * min(scaleX, scaleY) * item.scale
+            let textColor = NSColor(item.color)
+            let finalFontSize = max(12, fontSizeOut)
+            if let textImage = watermarkImage(text: item.text, fontSize: finalFontSize, color: textColor) {
+                let imageLayer = CALayer()
+                let imageSize = CGSize(width: textImage.width, height: textImage.height)
+                let yInCA = cropRect.height - outY - imageSize.height / 2
+                imageLayer.frame = CGRect(
+                    x: outX - imageSize.width / 2,
+                    y: yInCA,
+                    width: imageSize.width,
+                    height: imageSize.height
+                )
+                imageLayer.contents = textImage
+                imageLayer.contentsScale = 2.0
+                imageLayer.shadowOpacity = 0.35
+                imageLayer.shadowRadius = 1.5
+                imageLayer.shadowOffset = CGSize(width: 0, height: 1)
+                imageLayer.shadowColor = NSColor.black.cgColor
+                parentLayer.addSublayer(imageLayer)
+            }
+
+            // #region agent log
+            agentDebugLog(
+                hypothesisId: "H2",
+                location: "ContentView.swift:executeRenderEngine.text.frame",
+                message: "text layer frame computed",
+                data: [
+                    "text": item.text,
+                    "offsetX": item.offset.width,
+                    "offsetY": item.offset.height,
+                    "outX": outX,
+                    "outY": outY,
+                    "fontSize": finalFontSize
+                ]
+            )
+            // #endregion
         }
         
         videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(postProcessingAsVideoLayer: videoLayer, in: parentLayer)
@@ -413,9 +1118,26 @@ struct ContentView: View {
         let semaphore = DispatchSemaphore(value: 0); exportSession.exportAsynchronously { semaphore.signal() }; semaphore.wait()
         
         guard exportSession.status == .completed else {
+            // #region agent log
+            agentDebugLog(
+                hypothesisId: "H3",
+                location: "ContentView.swift:executeRenderEngine.export.fail",
+                message: "export failed",
+                data: ["status": exportSession.status.rawValue, "error": exportSession.error?.localizedDescription ?? "nil"]
+            )
+            // #endregion
             DispatchQueue.main.async { self.isExporting = false; self.statusMessage = "❌ 渲染失败: \(exportSession.error?.localizedDescription ?? "")" }
             return
         }
+
+        // #region agent log
+        agentDebugLog(
+            hypothesisId: "H3",
+            location: "ContentView.swift:executeRenderEngine.export.success",
+            message: "export completed",
+            data: ["status": exportSession.status.rawValue]
+        )
+        // #endregion
         
         DispatchQueue.main.async { self.statusMessage = "⏳ 渲染完成，正在写入相册..." }
         PHPhotoLibrary.shared().performChanges({
