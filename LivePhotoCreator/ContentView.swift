@@ -26,24 +26,29 @@ struct TextOverlayItem: Identifiable {
 }
 
 private struct PanelCardModifier: ViewModifier {
+    let background: Color
+    let border: Color
+
     func body(content: Content) -> some View {
         content
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.92))
+            .background(background)
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(border, lineWidth: 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 
 private extension View {
-    func panelCard() -> some View {
-        modifier(PanelCardModifier())
+    func panelCard(background: Color, stroke: Color) -> some View {
+        modifier(PanelCardModifier(background: background, border: stroke))
     }
 }
 
 struct ContentView: View {
+    private let ratioOptions: [String] = ["原比例", "1:1", "16:9", "9:16", "4:3", "3:4"]
+    private let accentYellow = Color(red: 0.99, green: 0.78, blue: 0.10)
     @State private var videoURL: URL?
     @State private var player: AVPlayer?
     @State private var statusMessage: String = "请先导入视频"
@@ -78,11 +83,41 @@ struct ContentView: View {
     @State private var editingTextID: UUID?
     @State private var hoveredTextID: UUID?
     @State private var isTextListExpanded: Bool = false
+    @FocusState private var isTextInputFocused: Bool
 
     // 主题：明亮 / 暗黑
     @AppStorage("appColorScheme") private var appColorScheme: String = "dark"
     @State private var debugRunId: String = UUID().uuidString
     @State private var lastDebugSecond: Int = -1
+
+    private var isDarkMode: Bool { appColorScheme == "dark" }
+    private var appBackground: Color {
+        isDarkMode ? Color(red: 0.10, green: 0.11, blue: 0.13) : Color(red: 0.965, green: 0.97, blue: 0.985)
+    }
+    private var canvasBackground: Color {
+        isDarkMode ? Color(red: 0.14, green: 0.15, blue: 0.18) : Color(red: 0.92, green: 0.93, blue: 0.95)
+    }
+    private var panelBackground: Color {
+        isDarkMode ? Color(red: 0.12, green: 0.13, blue: 0.15).opacity(0.98) : Color.white.opacity(0.985)
+    }
+    private var panelStroke: Color {
+        isDarkMode ? Color.white.opacity(0.07) : Color.black.opacity(0.10)
+    }
+    private var controlSurface: Color {
+        isDarkMode ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    }
+    private var primaryText: Color {
+        isDarkMode ? Color.white.opacity(0.88) : Color.black.opacity(0.86)
+    }
+    private var secondaryText: Color {
+        isDarkMode ? Color.white.opacity(0.65) : Color.black.opacity(0.64)
+    }
+    private var listItemBackground: Color {
+        isDarkMode ? Color.primary.opacity(0.03) : Color.black.opacity(0.045)
+    }
+    private var listItemSelectedBackground: Color {
+        isDarkMode ? accentYellow.opacity(0.14) : accentYellow.opacity(0.22)
+    }
 
     // 考虑旋转后的真实物理比例
     var currentVideoSize: CGSize {
@@ -99,11 +134,8 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             HStack {
-                Text("Live Photo Creator")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.secondary)
                 Spacer()
                 HStack(spacing: 6) {
                     Button {
@@ -111,9 +143,9 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: "sun.max.fill")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(appColorScheme == "light" ? .white : .secondary)
+                            .foregroundColor(appColorScheme == "light" ? .black : secondaryText)
                             .frame(width: 28, height: 28)
-                            .background(appColorScheme == "light" ? Color.accentColor : Color.primary.opacity(0.08))
+                            .background(appColorScheme == "light" ? accentYellow : controlSurface)
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -123,27 +155,27 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: "moon.fill")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(appColorScheme == "dark" ? .white : .secondary)
+                            .foregroundColor(appColorScheme == "dark" ? .black : secondaryText)
                             .frame(width: 28, height: 28)
-                            .background(appColorScheme == "dark" ? Color.accentColor : Color.primary.opacity(0.08))
+                            .background(appColorScheme == "dark" ? accentYellow : controlSurface)
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 6)
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
 
-            HStack(spacing: 0) {
+            HStack(spacing: 14) {
             // ==== 左侧：画板区 ====
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 GeometryReader { geo in
                     ZStack {
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(NSColor.controlBackgroundColor))
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(canvasBackground)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                                RoundedRectangle(cornerRadius: 14)
+                                    .stroke(accentYellow.opacity(0.34), lineWidth: 1.2)
                             )
                         
                         if let player = player {
@@ -203,7 +235,7 @@ struct ContentView: View {
                             
                             // 4. 交互黄框
                             Rectangle()
-                                .stroke(selectedRatio == "原比例" && cropBoxScale == 1.0 ? Color.clear : Color.yellow, lineWidth: 2)
+                                .stroke(selectedRatio == "原比例" && cropBoxScale == 1.0 ? Color.clear : accentYellow.opacity(0.95), lineWidth: 1.6)
                                 .background(Color.white.opacity(0.001))
                                 .frame(width: currentBoxWidth, height: currentBoxHeight)
                                 .offset(cropOffset)
@@ -232,7 +264,7 @@ struct ContentView: View {
                             
                             if !(selectedRatio == "原比例" && cropBoxScale == 1.0) {
                                 Circle()
-                                    .fill(Color.yellow)
+                                    .fill(accentYellow.opacity(0.95))
                                     .frame(width: 16, height: 16)
                                     .contentShape(Rectangle())
                                     .offset(
@@ -267,20 +299,23 @@ struct ContentView: View {
                             
                             // 5. 文本层
                             ForEach($textItems) { $item in
-                                let isSelected = selectedTextID == item.id
-                                let controlsOpacity: Double = (hoveredTextID == item.id) ? 0.95 : 0.28
+                                let itemID = item.id
+                                let isSelected = selectedTextID == itemID
+                                let controlsOpacity: Double = (hoveredTextID == itemID) ? 0.95 : 0.28
                                 ZStack {
-                                    Text(item.text)
+                                    Text(normalizeOverlayText(item.text))
                                         .font(.system(size: item.fontSize, weight: .semibold))
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: true)
                                         .foregroundColor(item.color)
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 6)
-                                        .background(item.hasBackground ? Color.black.opacity(0.18) : Color.clear)
+                                        .background(Color.clear)
                                         .clipShape(RoundedRectangle(cornerRadius: 8))
 
                                     if isSelected {
                                         RoundedRectangle(cornerRadius: 10)
-                                            .stroke(Color.accentColor.opacity(0.45), lineWidth: 1.2)
+                                            .stroke(accentYellow.opacity(0.45), lineWidth: 1.2)
                                             .padding(-4)
                                             .opacity(controlsOpacity)
                                     }
@@ -288,36 +323,52 @@ struct ContentView: View {
                                 .scaleEffect(item.scale)
                                 .offset(item.offset)
                                 .onHover { inside in
-                                    hoveredTextID = inside ? item.id : (hoveredTextID == item.id ? nil : hoveredTextID)
+                                    hoveredTextID = inside ? itemID : (hoveredTextID == itemID ? nil : hoveredTextID)
                                 }
                                 .onTapGesture {
-                                    selectedTextID = item.id
+                                    selectedTextID = itemID
                                     editingTextID = nil
+                                }
+                                .onTapGesture(count: 2) {
+                                    beginEditingText(itemID)
                                 }
                                 .gesture(
                                     DragGesture().onChanged { value in
-                                        selectedTextID = item.id
-                                        item.offset = CGSize(
-                                            width: item.lastOffset.width + value.translation.width,
-                                            height: item.lastOffset.height + value.translation.height
+                                        selectedTextID = itemID
+                                        editingTextID = nil
+                                        guard let idx = textItems.firstIndex(where: { $0.id == itemID }) else { return }
+                                        textItems[idx].offset = CGSize(
+                                            width: textItems[idx].lastOffset.width + value.translation.width,
+                                            height: textItems[idx].lastOffset.height + value.translation.height
                                         )
                                     }.onEnded { _ in
-                                        item.lastOffset = item.offset
+                                        guard let idx = textItems.firstIndex(where: { $0.id == itemID }) else { return }
+                                        textItems[idx].lastOffset = textItems[idx].offset
                                     }
                                 )
                                 .animation(.easeOut(duration: 0.18), value: controlsOpacity)
                             }
                         } else {
                             Button(action: selectVideo) {
-                                VStack(spacing: 12) { Image(systemName: "plus.circle.fill").font(.system(size: 52)).foregroundColor(.blue); Text("点击选择视频文件").foregroundColor(.gray) }
+                                VStack(spacing: 12) {
+                                    Image(systemName: "plus.circle.fill")
+                                        .font(.system(size: 52))
+                                        .foregroundColor(accentYellow)
+                                    Text("点击选择视频文件")
+                                        .foregroundColor(secondaryText)
+                                }
                             }.buttonStyle(.plain)
                         }
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
                     .simultaneousGesture(
                         TapGesture().onEnded {
                             if editingTextID != nil {
-                                editingTextID = nil
+                                endTextEditing()
+                                return
+                            }
+                            if selectedTextID != nil {
+                                selectedTextID = nil
                                 return
                             }
                             if player != nil {
@@ -333,9 +384,9 @@ struct ContentView: View {
                         Button(action: togglePlay) {
                             Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                                 .font(.system(size: 20, weight: .semibold))
-                                .foregroundColor(videoURL == nil ? .secondary : .primary)
+                                .foregroundColor(videoURL == nil ? .gray : .black)
                                 .frame(width: 42, height: 42)
-                                .background(Color.primary.opacity(0.08))
+                                .background(videoURL == nil ? controlSurface : accentYellow)
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
@@ -356,6 +407,7 @@ struct ContentView: View {
                                     if !editing { seekPlayer(to: currentTime) }
                                 }
                             )
+                            .tint(accentYellow)
                             HStack {
                                 Text(formatTime(currentTime)).font(.caption2).foregroundColor(.secondary)
                                 Spacer()
@@ -377,6 +429,7 @@ struct ContentView: View {
                             }
                             .pickerStyle(.segmented)
                             .frame(width: 180)
+                            .tint(accentYellow)
                             .onChange(of: playbackSpeed) { _, val in
                                 if isPlaying {
                                     player?.rate = val
@@ -388,6 +441,7 @@ struct ContentView: View {
                             Image(systemName: "speaker.wave.2.fill").font(.system(size: 16, weight: .semibold)).foregroundColor(.secondary)
                             Slider(value: $playerVolume, in: 0...1)
                                 .frame(width: 120)
+                                .tint(accentYellow)
                                 .onChange(of: playerVolume) { _, v in player?.volume = v }
                         }
                     }
@@ -395,71 +449,56 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .panelCard()
+                .panelCard(background: panelBackground, stroke: panelStroke)
                 
-            }.padding().frame(maxWidth: .infinity)
+            }
+            .padding(.leading, 14)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity)
             
                 // ==== 右侧：控制面板区 ====
                 VStack(spacing: 10) {
-                    VStack(spacing: 6) {
-                        Button(action: exportLivePhoto) {
-                            Label(isExporting ? "正在渲染..." : "渲染导出 Live Photo", systemImage: "bolt.fill")
-                                .font(.headline)
-                                .foregroundColor(isExporting ? .gray : .black)
-                                .frame(maxWidth: .infinity, minHeight: 44)
-                                .background(isExporting ? Color.gray.opacity(0.5) : Color.yellow)
-                                .cornerRadius(10)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isExporting || videoURL == nil)
-
-                        Text(statusMessage)
-                            .font(.caption2)
-                            .foregroundColor(statusMessage.contains("成功") ? .green : (statusMessage.contains("❌") ? .red : .secondary))
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.top, 4)
-                    .panelCard()
-
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             VStack(alignment: .leading, spacing: 10) {
-                                Label("画面调整", systemImage: "crop").font(.headline)
+                                Text("裁剪比例")
+                                    .font(.headline)
                                 VStack(spacing: 0) {
-                                    HStack {
-                                        Text("比例")
-                                            .foregroundColor(.secondary)
-                                        Spacer()
-                                        Picker("", selection: $selectedRatio) {
-                                            Text("原图").tag("原比例")
-                                            Text("1:1").tag("1:1")
-                                            Text("16:9").tag("16:9")
-                                            Text("9:16").tag("9:16")
-                                            Text("4:3").tag("4:3")
-                                            Text("3:4").tag("3:4")
-                                        }
-                                        .pickerStyle(.menu)
-                                        .frame(width: 120)
-                                        .onChange(of: selectedRatio) { _ in
-                                            cropBoxScale = 1.0
-                                            cropOffset = .zero
-                                            lastCropOffset = .zero
+                                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                                        ForEach(ratioOptions, id: \.self) { ratio in
+                                            Button {
+                                                selectedRatio = ratio
+                                                cropBoxScale = 1.0
+                                                cropOffset = .zero
+                                                lastCropOffset = .zero
+                                            } label: {
+                                                Text(ratio == "原比例" ? "原比例" : ratio)
+                                                    .font(.system(size: 12, weight: .medium))
+                                                    .foregroundColor(selectedRatio == ratio ? .black : primaryText)
+                                                    .frame(maxWidth: .infinity, minHeight: 28)
+                                                    .background(selectedRatio == ratio ? accentYellow : controlSurface)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            }
+                                            .buttonStyle(.plain)
                                         }
                                     }
-                                    .padding(10)
-                                    .background(Color.primary.opacity(0.03))
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                    .padding(.vertical, 2)
 
-                                    Divider().padding(.horizontal, 6)
+                                    Divider().padding(.horizontal, 2).padding(.vertical, 10)
+                                    Text("方向调整")
+                                        .font(.subheadline)
+                                        .foregroundColor(primaryText)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                     HStack(spacing: 8) {
                                         Button(action: { isFlippedHorizontal.toggle() }) {
                                             Image(systemName: "arrow.left.and.right")
                                                 .frame(maxWidth: .infinity, minHeight: 30)
-                                                .background(isFlippedHorizontal ? Color.primary.opacity(0.10) : Color.clear)
+                                                .foregroundColor(primaryText)
+                                                .background(isFlippedHorizontal ? accentYellow.opacity(0.22) : controlSurface)
                                                 .overlay(
                                                     RoundedRectangle(cornerRadius: 8)
-                                                        .stroke(isFlippedHorizontal ? Color.primary.opacity(0.25) : Color.clear, lineWidth: 1)
+                                                        .stroke(isFlippedHorizontal ? accentYellow.opacity(0.55) : Color.clear, lineWidth: 1)
                                                 )
                                                 .cornerRadius(8)
                                         }
@@ -468,10 +507,11 @@ struct ContentView: View {
                                         Button(action: { isFlippedVertical.toggle() }) {
                                             Image(systemName: "arrow.up.and.down")
                                                 .frame(maxWidth: .infinity, minHeight: 30)
-                                                .background(isFlippedVertical ? Color.primary.opacity(0.10) : Color.clear)
+                                                .foregroundColor(primaryText)
+                                                .background(isFlippedVertical ? accentYellow.opacity(0.22) : controlSurface)
                                                 .overlay(
                                                     RoundedRectangle(cornerRadius: 8)
-                                                        .stroke(isFlippedVertical ? Color.primary.opacity(0.25) : Color.clear, lineWidth: 1)
+                                                        .stroke(isFlippedVertical ? accentYellow.opacity(0.55) : Color.clear, lineWidth: 1)
                                                 )
                                                 .cornerRadius(8)
                                         }
@@ -481,52 +521,61 @@ struct ContentView: View {
                                 }
                             }
                             .padding(12)
-                            .panelCard()
+                            .panelCard(background: panelBackground, stroke: panelStroke)
 
                             VStack(alignment: .leading, spacing: 10) {
                                 HStack {
-                                    Label("文本", systemImage: "textformat")
+                                    Text("文字叠加")
                                         .font(.headline)
                                     Spacer()
                                     Button(action: addText) {
-                                        Image(systemName: "plus.circle.fill")
-                                            .foregroundColor(.blue)
-                                            .font(.system(size: 24, weight: .medium))
+                                        Label("添加", systemImage: "plus")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundColor(primaryText)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(controlSurface)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
                                     }
                                     .buttonStyle(.plain)
                                 }
                                 if textItems.isEmpty {
                                     Text("先添加一条文本")
                                         .font(.caption)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(secondaryText)
                                 } else {
                                     VStack(spacing: 8) {
                                         let listItems = displayTextItems()
                                         ForEach(Array(listItems.enumerated()), id: \.element.id) { idx, textItem in
                                             Button {
-                                                selectedTextID = textItem.id
-                                                editingTextID = nil
+                                                if selectedTextID == textItem.id {
+                                                    beginEditingText(textItem.id)
+                                                } else {
+                                                    selectedTextID = textItem.id
+                                                    editingTextID = nil
+                                                }
                                             } label: {
                                                 HStack {
                                                     Text("文本 \(indexOfTextItem(textItem.id) + 1)")
                                                         .font(.caption)
-                                                        .foregroundColor(.secondary)
-                                                    Text(textItem.text)
+                                                        .foregroundColor(secondaryText)
+                                                    Text(normalizeOverlayText(textItem.text))
                                                         .font(.caption2)
                                                         .lineLimit(1)
-                                                        .foregroundColor(.secondary)
+                                                        .foregroundColor(secondaryText)
                                                     Spacer()
                                                     Button(role: .destructive) {
                                                         removeText(id: textItem.id)
                                                     } label: {
                                                         Image(systemName: "trash")
                                                             .font(.system(size: 11, weight: .semibold))
+                                                            .foregroundColor(primaryText)
                                                     }
                                                     .buttonStyle(.plain)
                                                 }
                                                 .padding(.horizontal, 8)
                                                 .padding(.vertical, 6)
-                                                .background(selectedTextID == textItem.id ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.03))
+                                                .background(selectedTextID == textItem.id ? listItemSelectedBackground : listItemBackground)
                                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                                             }
                                             .buttonStyle(.plain)
@@ -538,53 +587,122 @@ struct ContentView: View {
                                         }
                                         .font(.caption2)
                                         .buttonStyle(.plain)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(secondaryText)
                                     }
                                 }
 
                                 if let selectedID = selectedTextID,
-                                   let index = textItems.firstIndex(where: { $0.id == selectedID }) {
-                                    TextField("文本内容（最多50字）", text: Binding(
-                                        get: { textItems[index].text },
-                                        set: { textItems[index].text = String($0.prefix(50)) }
+                                   textItems.contains(where: { $0.id == selectedID }) {
+                                    let textBinding = Binding<String>(
+                                        get: {
+                                            textItems.first(where: { $0.id == selectedID })?.text ?? ""
+                                        },
+                                        set: { newValue in
+                                            guard let currentIndex = textItems.firstIndex(where: { $0.id == selectedID }) else { return }
+                                            textItems[currentIndex].text = normalizeOverlayText(newValue)
+                                        }
+                                    )
+                                    let colorBinding = Binding<Color>(
+                                        get: {
+                                            textItems.first(where: { $0.id == selectedID })?.color ?? .white
+                                        },
+                                        set: { newColor in
+                                            guard let currentIndex = textItems.firstIndex(where: { $0.id == selectedID }) else { return }
+                                            textItems[currentIndex].color = newColor
+                                        }
+                                    )
+                                    let scaleBinding = Binding<CGFloat>(
+                                        get: {
+                                            textItems.first(where: { $0.id == selectedID })?.scale ?? 1.0
+                                        },
+                                        set: { newScale in
+                                            guard let currentIndex = textItems.firstIndex(where: { $0.id == selectedID }) else { return }
+                                            textItems[currentIndex].scale = newScale
+                                            textItems[currentIndex].lastScale = newScale
+                                        }
+                                    )
+                                    TextField("文本内容（最多20字）", text: Binding(
+                                        get: { textBinding.wrappedValue },
+                                        set: { textBinding.wrappedValue = $0 }
                                     ))
                                     .textFieldStyle(.roundedBorder)
+                                    .focused($isTextInputFocused)
                                     .onTapGesture {
-                                        editingTextID = selectedID
+                                        beginEditingText(selectedID)
                                     }
                                     .onSubmit {
-                                        editingTextID = nil
+                                        endTextEditing()
                                     }
 
-                                    HStack(spacing: 8) {
-                                        ColorPicker("", selection: $textItems[index].color).labelsHidden()
-                                        Spacer()
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "paintpalette.fill")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundColor(secondaryText)
+                                        ColorPicker("", selection: colorBinding)
+                                            .labelsHidden()
+                                        Slider(value: scaleBinding, in: 0.35...4.0)
+                                            .tint(accentYellow)
                                     }
-                                    Slider(value: $textItems[index].scale, in: 0.35...4.0)
-                                        .onChange(of: textItems[index].scale) { _, v in
-                                            textItems[index].lastScale = v
-                                        }
                                 }
                             }
                             .padding(12)
-                            .panelCard()
+                            .panelCard(background: panelBackground, stroke: panelStroke)
                         }
                         .padding(.horizontal, 12)
                         .padding(.top, 4)
-                        .padding(.bottom, 8)
+                        .padding(.bottom, 6)
                     }
+
+                    VStack(spacing: 8) {
+                        Text(statusMessage)
+                            .font(.caption2)
+                            .foregroundColor(statusMessage.contains("成功") ? .green : (statusMessage.contains("❌") ? .red : .secondary))
+                            .frame(maxWidth: .infinity, alignment: .center)
+
+                        Button(action: exportLivePhoto) {
+                            Label(isExporting ? "正在渲染..." : "导出 Live Photo", systemImage: "bolt.fill")
+                                .font(.headline)
+                                .foregroundColor(isExporting ? .gray : .black)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(isExporting ? Color.gray.opacity(0.5) : accentYellow)
+                                .cornerRadius(10)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isExporting || videoURL == nil)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .panelCard(background: panelBackground, stroke: panelStroke)
                 }
-                .frame(width: 300)
-                .padding(.trailing, 8)
+                .frame(width: 292)
+                .padding(.trailing, 12)
+                .padding(.top, 4)
+                .padding(.bottom, 12)
                 .disabled(videoURL == nil)
                 .opacity(videoURL == nil ? 0.45 : 1)
             }
         }
         .frame(minWidth: 900, minHeight: 600)
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(appBackground)
         .preferredColorScheme(appColorScheme == "light" ? .light : .dark)
         .onDeleteCommand {
             removeSelectedText()
+        }
+        .onExitCommand {
+            if editingTextID != nil {
+                endTextEditing()
+            } else if selectedTextID != nil {
+                selectedTextID = nil
+            }
+        }
+        .onChange(of: editingTextID) { _, newValue in
+            if newValue != nil {
+                DispatchQueue.main.async {
+                    isTextInputFocused = true
+                }
+            } else {
+                isTextInputFocused = false
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { _ in
             // #region agent log
@@ -647,10 +765,10 @@ struct ContentView: View {
         isPlaying.toggle()
     }
     func addText() {
-        let newItem = TextOverlayItem()
+        var newItem = TextOverlayItem()
+        newItem.text = ""
         textItems.append(newItem)
-        selectedTextID = newItem.id
-        editingTextID = newItem.id
+        beginEditingText(newItem.id)
     }
 
     func removeSelectedText() {
@@ -666,6 +784,11 @@ struct ContentView: View {
         if let ob = timeObserver, let old = player {
             old.removeTimeObserver(ob)
         }
+        // 先清理文本选择/编辑状态，避免 UI 闭包在数组已清空时访问失效项
+        selectedTextID = nil
+        editingTextID = nil
+        hoveredTextID = nil
+        isTextListExpanded = false
         timeObserver = nil
         videoURL = nil
         player = nil
@@ -678,10 +801,6 @@ struct ContentView: View {
         isFlippedHorizontal = false
         isFlippedVertical = false
         textItems = []
-        selectedTextID = nil
-        editingTextID = nil
-        hoveredTextID = nil
-        isTextListExpanded = false
         statusMessage = "请先导入视频"
     }
 
@@ -691,6 +810,16 @@ struct ContentView: View {
         if selectedTextID == id { selectedTextID = nil }
         if editingTextID == id { editingTextID = nil }
         if textItems.count <= 2 { isTextListExpanded = false }
+    }
+
+    func beginEditingText(_ id: UUID) {
+        selectedTextID = id
+        editingTextID = id
+    }
+
+    func endTextEditing() {
+        editingTextID = nil
+        isTextInputFocused = false
     }
 
     func displayTextItems() -> [TextOverlayItem] {
@@ -708,6 +837,14 @@ struct ContentView: View {
 
     func indexOfTextItem(_ id: UUID) -> Int {
         textItems.firstIndex(where: { $0.id == id }) ?? 0
+    }
+
+    private func normalizeOverlayText(_ raw: String) -> String {
+        let singleLine = raw
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        return String(singleLine.prefix(20))
     }
 
     private func formatTime(_ seconds: Double) -> String {
@@ -862,7 +999,11 @@ struct ContentView: View {
         cropRect.size.width = min(cropRect.size.width, vSize.width - cropRect.origin.x)
         cropRect.size.height = min(cropRect.size.height, vSize.height - cropRect.origin.y)
         
-        let textsToRender = textItems
+        let textsToRender = textItems.map { item in
+            var normalized = item
+            normalized.text = normalizeOverlayText(item.text)
+            return normalized
+        }
         let flipH = isFlippedHorizontal
         let flipV = isFlippedVertical
         let speed = playbackSpeed
@@ -1042,6 +1183,7 @@ struct ContentView: View {
         // #endregion
         
         for item in texts {
+            if item.text.isEmpty { continue }
             // 文字中心在 UI 中为 (uiWidth/2 + offset.width, uiHeight/2 + offset.height)
             // 转为裁剪框内坐标（左上为原点）
             let safeBoxW = max(boxW, 1)
@@ -1144,7 +1286,7 @@ struct ContentView: View {
             let req = PHAssetCreationRequest.forAsset(); req.addResource(with: .photo, fileURL: imageURL, options: nil); req.addResource(with: .pairedVideo, fileURL: videoURL, options: nil)
         }) { success, err in
             DispatchQueue.main.async {
-                self.isExporting = false; if success { self.statusMessage = "✅ 魔法大成功！文字、翻转与裁剪完美生效！" } else { self.statusMessage = "❌ 写入失败" }
+                self.isExporting = false; if success { self.statusMessage = "✅ 导出成功！快去图库看看吧~" } else { self.statusMessage = "❌ 写入失败" }
             }
         }
     }
